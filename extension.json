@@ -1,0 +1,13 @@
+{
+  "name": "RDM",
+  "apiVersion": "1.0.0",
+  "author": "Bartel",
+  "version": "0.0.1",
+  "description": "RDM: Remote Device Management - ANSI E1.20",
+  "extensions": {
+    "RDM": {
+      "type": "HighLevelAnalyzer",
+      "entryPoint": "HighLevelAnalyzer.Hla"
+    }
+  }
+}
