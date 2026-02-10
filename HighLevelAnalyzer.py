@@ -4,6 +4,93 @@
 from saleae.analyzers import HighLevelAnalyzer, AnalyzerFrame, StringSetting, NumberSetting, ChoicesSetting
 from enum import Enum
 
+CC_NAMES = {
+    0x10: 'DISC_CMD',
+    0x11: 'DISC_RSP',
+    0x20: 'GET_CMD',
+    0x21: 'GET_RSP',
+    0x30: 'SET_CMD',
+    0x31: 'SET_RSP',
+}
+
+PID_NAMES = {
+    0x0001: 'DISC_UNIQUE',
+    0x0002: 'DISC_MUTE',
+    0x0003: 'DISC_UNMUTE',
+    0x0010: 'PROXY_DEVS',
+    0x0011: 'PROXY_DEV_CNT',
+    0x0015: 'COMMS_STATUS',
+    0x0020: 'QUEUED_MSG',
+    0x0030: 'STATUS_MSGS',
+    0x0031: 'STATUS_ID_DESC',
+    0x0032: 'STATUS_ID_CLEAR',
+    0x0033: 'SUBDEV_STATUS_THR',
+    0x0034: 'QUEUED_MSG_SENSOR_SUB',
+    0x0050: 'SUPPORTED_PIDS',
+    0x0051: 'PID_DESC',
+    0x0055: 'SUPPORTED_PIDS_ENH',
+    0x0056: 'CTRL_FLAG_SUPPORT',
+    0x0057: 'NACK_DESC',
+    0x0058: 'PACKED_PID_SUB',
+    0x0059: 'PACKED_PID_INDEX',
+    0x0060: 'DEV_INFO',
+    0x0070: 'PROD_DETAIL_IDS',
+    0x0080: 'DEV_MODEL_DESC',
+    0x0081: 'MFR_LABEL',
+    0x0082: 'DEV_LABEL',
+    0x0090: 'FACTORY_DEFAULTS',
+    0x00A0: 'LANG_CAPS',
+    0x00B0: 'LANGUAGE',
+    0x00C0: 'SW_VER_LABEL',
+    0x00C1: 'BOOT_SW_VER_ID',
+    0x00C2: 'BOOT_SW_VER_LABEL',
+    0x00E0: 'DMX_PERSONALITY',
+    0x00E1: 'DMX_PERSONALITY_DESC',
+    0x00F0: 'DMX_START_ADDR',
+    0x0120: 'SLOT_INFO',
+    0x0121: 'SLOT_DESC',
+    0x0122: 'DEFAULT_SLOT_VAL',
+    0x0200: 'SENSOR_DEF',
+    0x0201: 'SENSOR_VAL',
+    0x0202: 'SENSOR_RECORD',
+    0x0400: 'DEV_HOURS',
+    0x0401: 'LAMP_HOURS',
+    0x0402: 'LAMP_STRIKES',
+    0x0403: 'LAMP_STATE',
+    0x0404: 'LAMP_ON_MODE',
+    0x0405: 'DEV_POWER_CYC',
+    0x0500: 'DISPLAY_INVERT',
+    0x0501: 'DISPLAY_LEVEL',
+    0x0600: 'PAN_INVERT',
+    0x0601: 'TILT_INVERT',
+    0x0602: 'PAN_TILT_SWAP',
+    0x0603: 'RTC',
+    0x1000: 'IDENTIFY',
+    0x1001: 'RESET',
+    0x1002: 'POWER_STATE',
+    0x1003: 'SELFTEST',
+    0x1004: 'SELFTEST_DESC',
+    0x1005: 'CAPTURE_PRESET',
+    0x1006: 'PRESET_PLAYBACK',
+}
+
+REQUEST_CC_SET = {0x10, 0x20, 0x30}
+RESPONSE_CC_SET = {0x11, 0x21, 0x31}
+
+def time_to_seconds(time_value):
+    if time_value is None:
+        return 0
+    if hasattr(time_value, "to_seconds"):
+        return time_value.to_seconds()
+    if hasattr(time_value, "seconds"):
+        return time_value.seconds
+    if hasattr(time_value, "total_seconds"):
+        return time_value.total_seconds()
+    try:
+        return float(time_value)
+    except (TypeError, ValueError):
+        return 0
+
 class State(Enum):
     PARSE_START = (0, '', 0)
     PARSE_SUBSTART = (1, '_sub', 1)
@@ -58,6 +145,17 @@ class RDMPacket():
     def printDeb(self, *args, **kwargs):
         if self._debug: print(*args, **kwargs)
 
+    def _format_named_value(self, value_bytes, names, width, include_hex=False):
+        if not value_bytes:
+            return ''
+        value = int.from_bytes(value_bytes, "big")
+        name = names.get(value)
+        if name:
+            if include_hex:
+                return f"{name} (0x{value:0{width}X})"
+            return name
+        return f"0x{value:0{width}X}"
+
     def process_data(self, data):
         (idx, param, size) = self._state.value
         if self._state == State.PARSE_END:
@@ -84,23 +182,7 @@ class RDMPacket():
                 setattr(self, param, newData)
                 self._tempSize = self._tempSize+1
             else:
-                print("Got no param", param)
-
-            # print(self._state.next)
-            # if self._new:
-            #     if data != b'\x01':
-            #         return false
-
-            #     self._new = False
-            #     self._isRDM = True
-            #     return False
-
-            # # Load the data bytes
-            # self._data += data
-
-            # assert self._length is not None
-            # # Only return true if we have the full packet
-            # return len(self._data) >= self._length
+                pass
 
             if (size == 0 or self._tempSize == size):
                 if hasattr(self, param): self.printDeb("DONE param", param, getattr(self, param).hex())
@@ -113,43 +195,70 @@ class RDMPacket():
             else:
                 return False
 
-    def get_analyzer_frame(self, start_time, end_time, break_time, verbose_setting):
+    def get_analyzer_frame(self, start_time, end_time, break_time, frame_type='rdm'):
         entries = {}
-        printVerbose = verbose_setting == 'On'
-        # Serial Analyzer only reports a short framing error, so start counting from beginning of the break to begin of next frame
-        # 26.2us is the measured average duration for the MaB and start bits of the first CC frame
-        breakTimeRound = round(break_time.__float__()*1000000-26.2)
-        displayBreak = breakTimeRound if break_time != 0 else "ERROR!"
+        printVerbose = self._debug
 
-        entries.update({'breakTime': displayBreak})
-        entries.update(self.printParam(State.PARSE_SUBSTART, printVerbose))
-        entries.update(self.printParam(State.PARSE_LENGTH, printVerbose))
-        entries.update(self.printParam(State.PARSE_DST))
-        entries.update(self.printParam(State.PARSE_SRC))
-        entries.update(self.printParam(State.PARSE_TN, printVerbose))
-        entries.update(self.printParam(State.PARSE_PORTID, printVerbose))
-        entries.update(self.printParam(State.PARSE_MSGCOUNT, printVerbose))
-        entries.update(self.printParam(State.PARSE_SUBDEV, printVerbose))
-        entries.update(self.printParam(State.PARSE_CC))
-        entries.update(self.printParam(State.PARSE_PID))
-        entries.update(self.printParam(State.PARSE_PDL))
-        entries.update(self.printParam(State.PARSE_PD))
+        # Stable insertion order for table columns.
+        if printVerbose:
+            if self._length:
+                entries.update({'length': str(int.from_bytes(self._length, "big"))})
+            else:
+                entries.update({'length': ''})
+        entries.update({'src': '0x' + self._src.hex()})
+        entries.update({'dst': '0x' + self._dst.hex()})
+        if printVerbose:
+            if self._tn:
+                entries.update({'tn': str(int.from_bytes(self._tn, "big"))})
+            else:
+                entries.update({'tn': ''})
+            if self._portid:
+                entries.update({'portid': str(int.from_bytes(self._portid, "big"))})
+            else:
+                entries.update({'portid': ''})
+            if self._msgcount:
+                entries.update({'msgcount': str(int.from_bytes(self._msgcount, "big"))})
+            else:
+                entries.update({'msgcount': ''})
+        if self._subdevice:
+            entries.update({'subdev': str(int.from_bytes(self._subdevice, "big"))})
+        else:
+            entries.update({'subdev': ''})
+        entries.update({'cc': self._format_named_value(self._cc, CC_NAMES, 2, printVerbose)})
+        entries.update({'pid': self._format_named_value(self._pid, PID_NAMES, 4, printVerbose)})
+        if printVerbose:
+            pid_nr = int.from_bytes(self._pid, "big") if self._pid else 0
+            entries.update({'pid_hex': f"0x{pid_nr:04X}" if self._pid else ''})
+        if self._pdl:
+            entries.update({'pdl': str(int.from_bytes(self._pdl, "big"))})
+        else:
+            entries.update({'pdl': ''})
+        pdl_value = int.from_bytes(self._pdl, "big") if self._pdl else 0
+        if pdl_value == 0:
+            entries.update({'pd': ''})
+        else:
+            entries.update(self.printParam(State.PARSE_PD))
         entries.update(self.printParam(State.PARSE_CHECKSUM, printVerbose))
 
 
-        return AnalyzerFrame('rdm', start_time, end_time, entries)
+        return AnalyzerFrame(frame_type, start_time, end_time, entries)
 
 # High level analyzers must subclass the HighLevelAnalyzer class.
 class Hla(HighLevelAnalyzer):
     # List of settings that a user can set for this High Level Analyzer.
     debug_setting = ChoicesSetting(label='Debug', choices=('Off', 'On'))
-    verbose_setting = ChoicesSetting(label='Verbose', choices=('Off', 'On'))
     # An optional list of types this analyzer produces, providing a way to customize the way frames are displayed in Logic 2.
-    # result_types = {
-    #     'mytype': {
-    #         'format': 'Output type: {{type}}, Input type: {{data.input_type}}'
-    #     }
-    # }
+    result_types = {
+        'rdm_cmd': {
+            'format': '{{data.cc}} - {{data.pid}}'
+        },
+        'rdm_rsp': {
+            'format': '{{data.cc}} - {{data.pid}}'
+        },
+        'rdm_unk': {
+            'format': '{{data.cc}} - {{data.pid}}'
+        },
+    }
 
     def __init__(self):
         self._packet = None
@@ -157,6 +266,9 @@ class Hla(HighLevelAnalyzer):
         self._frameStartTime = 0
         self._breakStartTime = 0
         self._last_byte = b''
+        self._console = False
+        self._last_frame_start = None
+        self._last_frame_end = None
         '''
         Initialize HLA.
 
@@ -166,12 +278,46 @@ class Hla(HighLevelAnalyzer):
         # print("Settings:", self.my_string_setting,
         #       self.my_number_setting, self.my_choices_setting)
 
+    def _packet_cc(self, packet):
+        return int.from_bytes(packet._cc, "big") if len(packet._cc) == 1 else None
+
+    def _format_console_line(self, tag, packet, start_time, end_time, break_time):
+        t_start = time_to_seconds(start_time)
+        t_end = time_to_seconds(end_time)
+        src = '0x' + packet._src.hex() if packet._src else ''
+        dst = '0x' + packet._dst.hex() if packet._dst else ''
+        cc = packet._format_named_value(packet._cc, CC_NAMES, 2, True)
+        pid = packet._format_named_value(packet._pid, PID_NAMES, 4, True)
+        pdl = '0x' + packet._pdl.hex() if packet._pdl else ''
+        pdl_value = int.from_bytes(packet._pdl, "big") if packet._pdl else 0
+        pd = ''
+        if pdl_value != 0 and packet._pd:
+            pd = '0x' + packet._pd.hex()
+        return (
+            f"RDM {tag} "
+            f"t={t_start:.6f}-{t_end:.6f} "
+            f"src={src} dst={dst} "
+            f"cc={cc} pid={pid} pdl={pdl} pd={pd}"
+        )
+
+    def _print_complete(self, tag, packet, start_time, end_time, break_time):
+        if not self._console:
+            return
+        line = self._format_console_line(tag, packet, start_time, end_time, break_time)
+        print(line)
+
     def decode(self, frame: AnalyzerFrame):
         '''
         Process a frame from the input analyzer, and optionally return a single `AnalyzerFrame` or a list of `AnalyzerFrame`s.
 
         The type and data values in `frame` will depend on the input analyzer.
         '''
+
+        # Debug controls console output only.
+        self._console = (self.debug_setting == 'On')
+        self._last_frame_start = frame.start_time
+        self._last_frame_end = frame.end_time
+        results = []
 
         if 'error' in frame.data:
             # Possible break
@@ -189,7 +335,11 @@ class Hla(HighLevelAnalyzer):
 
             if data != b'\xCC':
                 self._last_byte = data
-                return #AnalyzerFrame('unknown', frame.start_time, frame.end_time, {})
+                if not results:
+                    return None
+                if len(results) == 1:
+                    return results[0]
+                return results
 
             self._frameStartTime = frame.start_time
             if self._start_time == None: self._start_time = self._frameStartTime
@@ -201,7 +351,10 @@ class Hla(HighLevelAnalyzer):
 
         elif self._packet.process_data(data):
             # This is the end of the packet signalled by the packet class
-            result = self._packet.get_analyzer_frame(self._start_time, frame.end_time, self._breakTime, self.verbose_setting)
+            packet = self._packet
+            packet_start_time = self._start_time
+            packet_end_time = frame.end_time
+            packet_break_time = self._breakTime
 
             # reset variables
             self._packet = None
@@ -210,16 +363,40 @@ class Hla(HighLevelAnalyzer):
             self._breakStartTime = 0
             self._last_byte = data
 
-            # post the result
-            return result
+            cc = self._packet_cc(packet)
+            if cc in REQUEST_CC_SET:
+                results.append(packet.get_analyzer_frame(
+                    packet_start_time,
+                    packet_end_time,
+                    packet_break_time,
+                    'rdm_cmd',
+                ))
+                self._print_complete('CMD', packet, packet_start_time, packet_end_time, packet_break_time)
+            elif cc in RESPONSE_CC_SET:
+                results.append(packet.get_analyzer_frame(
+                    packet_start_time,
+                    packet_end_time,
+                    packet_break_time,
+                    'rdm_rsp',
+                ))
+                self._print_complete('RSP', packet, packet_start_time, packet_end_time, packet_break_time)
+            else:
+                results.append(packet.get_analyzer_frame(
+                    packet_start_time,
+                    packet_end_time,
+                    packet_break_time,
+                    'rdm_unk',
+                ))
+                self._print_complete('UNK', packet, packet_start_time, packet_end_time, packet_break_time)
 
-        # If ch is 'H' or 'l', output a frame
-        # if ch == b'\xcc':
-        #     return AnalyzerFrame('mytype', frame.start_time, frame.end_time, {
-        #         'input_type': frame.type
-        #     })
+            if not results:
+                return None
+            if len(results) == 1:
+                return results[0]
+            return results
 
-        # Return the data frame itself
-        # return AnalyzerFrame('mytype', frame.start_time, frame.end_time, {
-        #     'input_type': frame.type
-        # })
+        if not results:
+            return None
+        if len(results) == 1:
+            return results[0]
+        return results
