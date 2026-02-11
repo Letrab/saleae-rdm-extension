@@ -2,7 +2,7 @@
   "name": "RDM",
   "apiVersion": "1.0.0",
   "author": "Bartel & Tycho Hertogs",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "RDM: Remote Device Management - ANSI E1.20",
   "extensions": {
     "RDM": {
